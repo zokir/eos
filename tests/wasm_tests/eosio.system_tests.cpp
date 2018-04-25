@@ -161,6 +161,14 @@ public:
       return asset( result, symbol(SY(4,EOS)) );
    }
 
+   asset get_eos_supply() {
+      symbol sym(SY(4, EOS));
+      auto symbol_code = sym.to_symbol_code().value;
+      vector<char> data = get_row_by_account( N(eosio.token), symbol_code, N(stat), symbol_code );
+      return data.empty() ? asset(0, sym) : 
+         abi_ser.binary_to_variant( "currency_stats", data )["supply"].as<asset>();
+   }
+
    fc::variant get_total_stake( const account_name& act ) {
       vector<char> data = get_row_by_account( config::system_account_name, act, N(totalband), act );
       return data.empty() ? fc::variant() : abi_ser.binary_to_variant( "total_resources", data );
@@ -926,6 +934,8 @@ BOOST_FIXTURE_TEST_CASE( vote_for_two_producers, eosio_system_tester ) try {
    //alice votes for herself and bob
    issue( "alice", "2.0000 EOS",  config::system_account_name );
    BOOST_REQUIRE_EQUAL( success(), stake( "alice", "1.0000 EOS", "1.0000 EOS", "0.0000 EOS" ) );
+   // return;   
+   //   produce_blocks(10);
    BOOST_REQUIRE_EQUAL( success(), push_action(N(alice), N(voteproducer), mvo()
                                                ("voter",  "alice")
                                                ("proxy", name(0).to_string() )
@@ -1099,14 +1109,12 @@ BOOST_FIXTURE_TEST_CASE( proxy_actions_affect_producers, eosio_system_tester ) t
 
 } FC_LOG_AND_RETHROW()
 
-BOOST_FIXTURE_TEST_CASE(producer_pay, eosio_system_tester) try {
+BOOST_FIXTURE_TEST_CASE(producer_claims_rewards, eosio_system_tester) try {
    issue( "alice", "100.0000 EOS", config::system_account_name);
    BOOST_REQUIRE_EQUAL( asset::from_string("100.0000 EOS"), get_balance( "alice" ) );
 
    fc::variant params = producer_parameters_example(50);
    vector<char> key = fc::raw::pack(get_public_key(N(alice), "active"));
-
-   // 1 block produced
 
    BOOST_REQUIRE_EQUAL(success(), push_action(N(alice), N(regproducer), mvo()
                                               ("producer",  "alice")
@@ -1119,40 +1127,91 @@ BOOST_FIXTURE_TEST_CASE(producer_pay, eosio_system_tester) try {
 
    BOOST_REQUIRE_EQUAL("alice", prod["owner"].as_string());
    BOOST_REQUIRE_EQUAL(0, prod["total_votes"].as_uint64());
+   BOOST_REQUIRE_EQUAL(0, prod["per_block_payments"].as<asset>().amount);
    REQUIRE_EQUAL_OBJECTS(params, prod["prefs"]);
    BOOST_REQUIRE_EQUAL(string(key.begin(), key.end()), to_string(prod["packed_key"]));
-
 
    issue("bob", "2000.0000 EOS", config::system_account_name);
    BOOST_REQUIRE_EQUAL( asset::from_string("2000.0000 EOS"), get_balance( "bob" ) );
 
    // bob makes stake
-   // 1 block produced
-
    BOOST_REQUIRE_EQUAL(success(), stake("bob", "11.0000 EOS", "10.1111 EOS", "10.1111 EOS"));
 
    // bob votes for alice
-   // 1 block produced
    BOOST_REQUIRE_EQUAL(success(), push_action(N(bob), N(voteproducer), mvo()
                                               ("voter",  "bob")
                                               ("proxy", name(0).to_string())
                                               ("producers", vector<account_name>{ N(alice) })
                                               )
                        );
-
+   prod = get_producer_info(N(alice));
+   BOOST_REQUIRE(0 < prod["total_votes"].as_uint64());
+   // produce 10 blocks, alice claims rewards
    produce_blocks(10);
    prod = get_producer_info("alice");
-   BOOST_REQUIRE(prod["per_block_payments"].as_uint64() > 0);
-   BOOST_REQUIRE_EQUAL(success(), push_action(N(alice), N(claimrewards), mvo()
-                                              ("owner",     "alice")
-                                              )
-                       );
+   BOOST_REQUIRE(0 < prod["per_block_payments"].as<asset>().amount);
+   BOOST_REQUIRE_EQUAL(success(), push_action(N(alice), N(claimrewards), mvo()("owner", "alice")));
    prod = get_producer_info("alice");
-   BOOST_REQUIRE_EQUAL(0, prod["per_block_payments"].as_uint64());
+   BOOST_REQUIRE_EQUAL(0, prod["per_block_payments"].as<asset>().amount);
+   
+   // produce 10 blocks, alice is paid
+   produce_blocks(10);
+   prod = get_producer_info("alice");
+   BOOST_REQUIRE(0 < prod["per_block_payments"].as<asset>().amount);
+   
+   // but cannot claim rewards yet, it's been only 5 seconds since previous claim
+   BOOST_REQUIRE_EQUAL(error("condition: assertion failed: already claimed rewards within a day"),
+                       push_action(N(alice), N(claimrewards), mvo()("owner", "alice")));
+   
+   // she waits 23 hours and 5 minutes
+   produce_block(fc::seconds(23 * 3600 + 55 * 60));
+   BOOST_REQUIRE_EQUAL(error("condition: assertion failed: already claimed rewards within a day"),
+                       push_action(N(alice), N(claimrewards), mvo()("owner", "alice")));
+   
+   produce_block(fc::seconds(5 * 60 - 5));
+   // now it's been 24 hours, she can claim rewards again
+   BOOST_REQUIRE_EQUAL(success(), push_action(N(alice), N(claimrewards), mvo()("owner", "alice")));
+   
+} FC_LOG_AND_RETHROW()
 
- } FC_LOG_AND_RETHROW()
+BOOST_FIXTURE_TEST_CASE( inactive_producers, eosio_system_tester ) try {
+   vector<account_name> producers;
+   for (char i = 'a'; i <= 'u'; ++i) {
+      producers.emplace_back( string("init") + i );
+   }
+   create_accounts( producers );
+   for (uint32_t i = 0; i < producers.size(); ++i) {
+      regproducer( producers[i], i + 1 );
+   }
 
-
+   // alice and bob stake and vote
+   issue("alice", "1000.0000 EOS",  config::system_account_name);
+   issue("bob",   "1000.0000 EOS",  config::system_account_name);
+   BOOST_REQUIRE_EQUAL(success(), stake( "alice", "30.0000 EOS", "20.0000 EOS", "50.0000 EOS"));
+   BOOST_REQUIRE_EQUAL(success(), stake( "bob",   "30.0000 EOS", "20.0000 EOS", "50.0000 EOS"));
+   BOOST_REQUIRE_EQUAL(success(), push_action(N(alice), N(voteproducer), mvo()
+                                              ("voter",     "alice")
+                                              ("proxy",     name(0).to_string())
+                                              ("producers", producers)));
+   BOOST_REQUIRE_EQUAL(success(), push_action(N(bob), N(voteproducer), mvo()
+                                              ("voter",     "bob")
+                                              ("proxy",     name(0).to_string())
+                                              ("producers", producers)));
+   {
+      produce_blocks(21 * 12);
+      produce_blocks_until_end_of_round();
+      bool all_producers_are_active = true;
+      for (uint32_t i = 0; i < producers.size(); ++i) {
+         auto prod = get_producer_info(producers[i]);
+         if (prod["last_produced_block_time"].as<uint32_t>() == 0 || to_string(prod["packed_key"]).empty()) {
+            all_producers_are_active  = false;
+            break;
+         }
+      }
+      BOOST_REQUIRE(all_producers_are_active);
+   }
+   
+} FC_LOG_AND_RETHROW()
 
 BOOST_FIXTURE_TEST_CASE( voters_actions_affect_proxy_and_producers, eosio_system_tester ) try {
    create_accounts( { N(donald), N(producer1), N(producer2), N(producer3) } );

@@ -28,6 +28,7 @@ namespace eosiosystem {
 
 
    static constexpr uint32_t blocks_per_year = 52*7*24*2*3600; // half seconds per year
+   static constexpr uint32_t blocks_per_day = 24*2*3600;
    static constexpr uint32_t blocks_per_producer = 12;
 
    struct voter_info {
@@ -233,6 +234,28 @@ namespace eosiosystem {
       schedule.producers.reserve(21);
       size_t n = 0;
       for ( auto it = idx.crbegin(); it != idx.crend() && n < 21 && 0 < it->total_votes; ++it ) {
+
+         if ( it->time_became_active == 0 && it->active() ) {
+            auto prod = producers_tbl.find( it->owner );
+            if ( prod != producers_tbl.end() ) {
+               producers_tbl.modify( prod, 0, [&](auto& p) {
+                     p.time_became_active = cycle_time;
+                  });
+            }
+         } else if ( it->active() &&
+                     cycle_time > 21 * 12 + it->time_became_active &&
+                     cycle_time > it->last_produced_block_time + blocks_per_day ) {
+            auto prod = producers_tbl.find( it->owner );
+            if ( prod != producers_tbl.end() ) {
+               producers_tbl.modify( prod, 0, [&](auto& p) {
+                     p.packed_key.clear();
+                     p.time_became_active = 0;
+                     p.last_produced_block_time = 0;
+                  });
+            }
+            continue;
+         }
+
          if ( it->active() ) {
             schedule.producers.emplace_back();
             schedule.producers.back().producer_name = it->owner;

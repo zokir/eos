@@ -124,12 +124,14 @@
       "name": "producer_info",
       "base": "",
       "fields": [
-         {"name":"owner",              "type":"account_name"},
-         {"name":"total_votes",        "type":"uint128"},
-         {"name":"prefs",              "type":"eosio_parameters"},
-         {"name":"packed_key",         "type":"uint8[]"},
-         {"name":"per_block_payments", "type":"uint64"},
-         {"name":"last_claim_time",    "type":"uint32"}
+         {"name":"owner",                    "type":"account_name"},
+         {"name":"total_votes",              "type":"uint128"},
+         {"name":"prefs",                    "type":"eosio_parameters"},
+         {"name":"packed_key",               "type":"uint8[]"},
+         {"name":"per_block_payments",       "type":"asset"},
+         {"name":"last_rewards_claim",       "type":"uint32"},
+         {"name":"time_became_active",       "type":"uint32"},
+         {"name":"last_produced_block_time", "type":"uint32"}
       ]
     },{
       "name": "regproducer",
